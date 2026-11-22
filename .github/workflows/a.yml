@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
-        description: "并发 job 数(每个 job = workers x count 个账号)"
+        description: "并发 job 数(默认 256，超出 runner 并发的部分自动排队)"
         required: true
-        default: "1"
+        default: "256"
         type: choice
         options:
           - "1"
@@ -17,6 +17,7 @@ on:
           - "6"
           - "7"
           - "200"
+          - "256"
       count:
         description: "每个 worker 的目标成功账号数"
         required: true
