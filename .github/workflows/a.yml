@@ -1,0 +1,267 @@
+name: EdgeOne Reg Distribution (pull main repo)
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "并发 job 数(每个 job = workers x count 个账号)"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "200"
+      count:
+        description: "每个 worker 的目标成功账号数"
+        required: true
+        default: "5"
+        type: string
+      workers:
+        description: "每个 job 的并发进程数"
+        required: true
+        default: "2"
+        type: string
+      harvest:
+        description: "注册后采集凭据"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - "all"
+          - "model"
+          - "sandbox"
+          - "cam"
+          - "none"
+      upstream:
+        description: "旧上游地址(host:port, 可留空)"
+        required: false
+        type: string
+      upstream_token:
+        description: "旧上游 Bearer token(可留空)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edgeone-reg-dist-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUNBUFFERED: "1"
+  MAIL_API: "https://mail.minecraft.fashion"
+  MAIL_DOMAIN: "*.jsip.us"
+
+jobs:
+  prep:
+    name: Prepare matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Build job index list
+        id: gen
+        shell: bash
+        run: |
+          n=${{ inputs.jobs }}
+          arr=$(seq 1 "$n" | jq -R -s -c 'split("\n") | map(select(length>0)) | map(tonumber)')
+          echo "matrix=$arr" >> "$GITHUB_OUTPUT"
+          echo "jobs to run: $arr"
+
+  register:
+    name: "register batch ${{ matrix.idx }}"
+    runs-on: windows-latest
+    needs: prep
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        idx: ${{ fromJSON(needs.prep.outputs.matrix) }}
+
+    steps:
+      - name: Mask secrets
+        shell: pwsh
+        run: |
+          Write-Host "::add-mask::${{ inputs.upstream_token }}"
+          Write-Host "::add-mask::${{ inputs.upstream }}"
+          Write-Host "::add-mask::${{ secrets.UPSTREAM_TOKEN }}"
+          Write-Host "::add-mask::${{ secrets.UPSTREAM_API }}"
+
+      - name: Pull private main repo
+        uses: actions/checkout@v4
+        with:
+          repository: xbox-cn/EdgeOne_Reg_release_V1
+          token: ${{ secrets.MAIN_REPO_TOKEN }}
+          path: mainrepo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: mainrepo/requirements.txt
+
+      - name: Install deps
+        shell: pwsh
+        working-directory: mainrepo
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install cloakbrowser (fresh)
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:USERPROFILE ".cloakbrowser"
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          python -m cloakbrowser install
+
+      - name: Resolve cloak chrome path
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:USERPROFILE ".cloakbrowser"
+          if (-not (Test-Path $root)) { throw "cloak dir missing: $root" }
+          $c = Get-ChildItem $root -Recurse -Filter chrome.exe -ErrorAction SilentlyContinue |
+               Sort-Object FullName | Select-Object -Last 1
+          if (-not $c) { throw "cloak chrome.exe not found under $root" }
+          if ($c.Length -lt 1MB) { throw "chrome.exe 过小/损坏: $($c.FullName) size=$($c.Length)" }
+          echo "CHROME_EXE=$($c.FullName)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          Write-Host "cloak chrome OK: $($c.FullName) size=$($c.Length)"
+
+      - name: Cache CLIP model
+        id: clip-model
+        uses: actions/cache@v4
+        with:
+          path: mainrepo/clip-model
+          key: clip-model-vit-b-p32-v2
+
+      - name: Download CLIP model (first run only)
+        if: steps.clip-model.outputs.cache-hit != 'true'
+        shell: pwsh
+        working-directory: mainrepo
+        run: python -c "from eoreg.clip_guess import ensure_model; print(ensure_model())"
+
+      - name: Register + harvest
+        shell: pwsh
+        working-directory: mainrepo
+        env:
+          UPSTREAM_API: ${{ secrets.UPSTREAM_API || vars.UPSTREAM_API || inputs.upstream }}
+          UPSTREAM_TOKEN: ${{ secrets.UPSTREAM_TOKEN || vars.UPSTREAM_TOKEN || inputs.upstream_token }}
+          EO_PUBLISH_URL: ${{ secrets.EO_PUBLISH_URL || vars.EO_PUBLISH_URL }}
+          EO_PUBLISH_KEY: ${{ secrets.EO_PUBLISH_KEY || vars.EO_PUBLISH_KEY }}
+        run: |
+          $extra = @()
+          switch ("${{ inputs.harvest }}") {
+            "none"    { $extra = @("--no-cam", "--no-sandbox", "--no-model") }
+            "model"   { $extra = @("--no-cam", "--no-sandbox") }
+            "sandbox" { $extra = @("--no-cam", "--no-model") }
+            "cam"     { $extra = @("--no-sandbox", "--no-model") }
+          }
+          $maxMail = [int]"${{ inputs.count }}" * 4
+          Write-Host "harvest=${{ inputs.harvest }} extra=$($extra -join ' ')"
+          $cliArgs = @("-u", "batch_register.py", "--count", "${{ inputs.count }}",
+                       "--workers", "${{ inputs.workers }}", "--tries", "4",
+                       "--max-mail", "$maxMail", "--mail-timeout", "240",
+                       "--out-dir", "out_${{ matrix.idx }}") + $extra
+          python @cliArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify import
+        if: success()
+        shell: pwsh
+        working-directory: mainrepo
+        env:
+          EO_PUBLISH_URL: ${{ secrets.EO_PUBLISH_URL || vars.EO_PUBLISH_URL }}
+          EO_PUBLISH_KEY: ${{ secrets.EO_PUBLISH_KEY || vars.EO_PUBLISH_KEY }}
+        run: |
+          if (-not $env:EO_PUBLISH_URL -or -not $env:EO_PUBLISH_KEY) {
+            Write-Host "EO_PUBLISH_URL/EO_PUBLISH_KEY 未配置，跳过导入校验"
+            exit 0
+          }
+          python -u verify_import.py --accounts "out_${{ matrix.idx }}/accounts.jsonl"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Collect results
+        if: always()
+        shell: pwsh
+        working-directory: mainrepo
+        run: |
+          $out = "out_${{ matrix.idx }}"
+          $map = @{
+            "accounts.jsonl"   = "accounts_job_${{ matrix.idx }}.jsonl"
+            "keys_cam.txt"     = "keys_cam_job_${{ matrix.idx }}.txt"
+            "keys_sandbox.txt" = "keys_sandbox_job_${{ matrix.idx }}.txt"
+            "keys_model.txt"   = "keys_model_job_${{ matrix.idx }}.txt"
+            "key.txt"          = "key_job_${{ matrix.idx }}.txt"
+          }
+          foreach ($k in $map.Keys) {
+            $src = Join-Path $out $k
+            if (Test-Path $src) { Copy-Item $src $map[$k] -Force }
+            else { New-Item -ItemType File $map[$k] -Force | Out-Null }
+          }
+          if (Test-Path (Join-Path $out "accounts.jsonl")) {
+            $lines = (Get-Content (Join-Path $out "accounts.jsonl") | Measure-Object -Line).Lines
+            Write-Host "accounts lines: $lines"
+          }
+
+      - name: Upload per-job artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.idx }}
+          retention-days: 1
+          path: |
+            mainrepo/accounts_job_${{ matrix.idx }}.jsonl
+            mainrepo/keys_cam_job_${{ matrix.idx }}.txt
+            mainrepo/keys_sandbox_job_${{ matrix.idx }}.txt
+            mainrepo/keys_model_job_${{ matrix.idx }}.txt
+            mainrepo/key_job_${{ matrix.idx }}.txt
+            mainrepo/runtime/fail_*.png
+          if-no-files-found: ignore
+
+  merge:
+    name: Merge results
+    runs-on: ubuntu-latest
+    needs: register
+    if: always()
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: downloads
+          pattern: result-*
+          merge-multiple: true
+
+      - name: Merge keys & accounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat downloads/accounts_job_*.jsonl > accounts-all.jsonl 2>/dev/null || : > accounts-all.jsonl
+          cat downloads/key_job_*.txt > keys-all.txt 2>/dev/null || : > keys-all.txt
+          for t in cam sandbox model; do
+            cat "downloads/keys_${t}_job_"*.txt > "keys-${t}-all.txt" 2>/dev/null || : > "keys-${t}-all.txt"
+          done
+          echo "accounts: $(wc -l < accounts-all.jsonl)"
+          echo "model keys: $(wc -l < keys-all.txt)"
+          echo "cam keys: $(wc -l < keys-cam-all.txt)"
+          echo "sandbox tokens: $(wc -l < keys-sandbox-all.txt)"
+
+      - name: Upload merged
+        uses: actions/upload-artifact@v4
+        with:
+          name: keys-all
+          retention-days: 1
+          path: |
+            accounts-all.jsonl
+            keys-all.txt
+            keys-cam-all.txt
+            keys-sandbox-all.txt
+            keys-model-all.txt
+          if-no-files-found: ignore
