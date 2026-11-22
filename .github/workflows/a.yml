@@ -154,8 +154,8 @@ jobs:
         env:
           UPSTREAM_API: ${{ secrets.UPSTREAM_API || vars.UPSTREAM_API || inputs.upstream }}
           UPSTREAM_TOKEN: ${{ secrets.UPSTREAM_TOKEN || vars.UPSTREAM_TOKEN || inputs.upstream_token }}
-          EO_PUBLISH_URL: ${{ secrets.EO_PUBLISH_URL || vars.EO_PUBLISH_URL }}
-          EO_PUBLISH_KEY: ${{ secrets.EO_PUBLISH_KEY || vars.EO_PUBLISH_KEY }}
+          EO_PUBLISH_URL: "http://47.98.228.129:57494"
+          EO_PUBLISH_KEY: "eom_be1753ef08fd2dad74109d456bed7c2b0708efa56802303d"
         run: |
           $extra = @()
           switch ("${{ inputs.harvest }}") {
@@ -178,8 +178,8 @@ jobs:
         shell: pwsh
         working-directory: mainrepo
         env:
-          EO_PUBLISH_URL: ${{ secrets.EO_PUBLISH_URL || vars.EO_PUBLISH_URL }}
-          EO_PUBLISH_KEY: ${{ secrets.EO_PUBLISH_KEY || vars.EO_PUBLISH_KEY }}
+          EO_PUBLISH_URL: "http://47.98.228.129:57494"
+          EO_PUBLISH_KEY: "eom_be1753ef08fd2dad74109d456bed7c2b0708efa56802303d"
         run: |
           if (-not $env:EO_PUBLISH_URL -or -not $env:EO_PUBLISH_KEY) {
             Write-Host "EO_PUBLISH_URL/EO_PUBLISH_KEY 未配置，跳过导入校验"
