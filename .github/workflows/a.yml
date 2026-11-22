@@ -51,10 +51,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: edgeone-reg-dist-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUNBUFFERED: "1"
