@@ -96,11 +96,19 @@ jobs:
           Write-Host "::add-mask::${{ secrets.UPSTREAM_TOKEN }}"
           Write-Host "::add-mask::${{ secrets.UPSTREAM_API }}"
 
+      - name: Decode deploy key
+        id: deploykey
+        shell: bash
+        run: |
+          echo "key<<EOF" >> "$GITHUB_OUTPUT"
+          echo "${{ secrets.MAIN_REPO_TOKEN }}" | base64 -d >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Pull private main repo
         uses: actions/checkout@v4
         with:
           repository: xbox-cn/EdgeOne_Reg_release_V1
-          ssh-key: ${{ secrets.MAIN_REPO_TOKEN }}
+          ssh-key: ${{ steps.deploykey.outputs.key }}
           path: mainrepo
 
       - uses: actions/setup-python@v5
