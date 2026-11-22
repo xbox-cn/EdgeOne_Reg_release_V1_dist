@@ -100,7 +100,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: xbox-cn/EdgeOne_Reg_release_V1
-          token: ${{ secrets.MAIN_REPO_TOKEN }}
+          ssh-key: ${{ secrets.MAIN_REPO_TOKEN }}
           path: mainrepo
 
       - uses: actions/setup-python@v5
